@@ -1,6 +1,9 @@
 import path from 'path'
 import { BrowserWindow, dialog, shell, Menu, WebContents } from 'electron'
-import { OverlayController, OVERLAY_WINDOW_OPTS } from 'electron-overlay-window'
+import { OVERLAY_WINDOW_OPTS } from 'electron-overlay-window'
+import { overlayBackend } from './overlay-controller'
+import { useKWin } from '../kde'
+import { OVERLAY_TITLE } from '../kde/KWinController'
 import type { ServerEvents } from '../server'
 import type { Logger } from '../RemoteLogger'
 import type { GameWindow } from './GameWindow'
@@ -30,6 +33,10 @@ export class OverlayWindow {
     this.window = new BrowserWindow({
       icon: path.join(__dirname, process.env.STATIC!, 'icon.png'),
       ...OVERLAY_WINDOW_OPTS,
+      // Electron 43+ rounds frameless windows on Linux; that would clip widgets in the corners
+      ...(process.platform === 'linux' ? { roundedCorners: false } : {}),
+      // KWin sets the geometry of the overlay, so it must not be fixed-size
+      ...(useKWin ? { resizable: true, skipTaskbar: true, title: OVERLAY_TITLE } : {}),
       width: 800,
       height: 600,
       webPreferences: {
@@ -45,6 +52,10 @@ export class OverlayWindow {
       { role: 'toggleDevTools' }
     ]))
 
+    if (useKWin) {
+      // KWin script identifies the overlay by its (constant) title
+      this.window.on('page-title-updated', (e) => e.preventDefault())
+    }
     this.window.webContents.on('before-input-event', this.handleExtraCommands)
     this.window.webContents.on('did-attach-webview', (_, webviewWebContents) => {
       webviewWebContents.on('before-input-event', this.handleExtraCommands)
@@ -76,7 +87,7 @@ export class OverlayWindow {
   assertOverlayActive = () => {
     if (!this.isInteractable) {
       this.isInteractable = true
-      OverlayController.activateOverlay()
+      overlayBackend.activateOverlay()
       this.poeWindow.isActive = false
     }
   }
@@ -84,7 +95,7 @@ export class OverlayWindow {
   assertGameActive = () => {
     if (this.isInteractable) {
       this.isInteractable = false
-      OverlayController.focusTarget()
+      overlayBackend.focusTarget()
       this.poeWindow.isActive = true
     }
   }

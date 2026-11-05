@@ -1,4 +1,5 @@
-import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { UiohookKey } from 'uiohook-napi'
+import { inputHook } from '../shortcuts/input-backend'
 import type { ServerEvents } from '../server'
 import type { GameConfig } from '../host-files/GameConfig'
 import type { OverlayWindow } from './OverlayWindow'
@@ -12,7 +13,7 @@ export class OverlayVisibility {
     private overlay: OverlayWindow,
     private gameConfig: GameConfig
   ) {
-    uIOhook.on('keydown', (e) => {
+    inputHook.on('keydown', (e) => {
       if (e.altKey && !e.shiftKey && !e.ctrlKey && e.keycode === UiohookKey.Alt) {
         this.makeInvisible()
       } else {
@@ -20,11 +21,11 @@ export class OverlayVisibility {
       }
     })
 
-    uIOhook.on('keyup', (e) => {
+    inputHook.on('keyup', (e) => {
       if (!e.altKey) { this.makeVisible() }
     })
 
-    uIOhook.on('mousemove', (e) => {
+    inputHook.on('mousemove', (e) => {
       if (!e.altKey) { this.makeVisible() }
     })
   }

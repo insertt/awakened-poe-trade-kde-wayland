@@ -8,19 +8,33 @@ const isDev = !process.argv.includes('--prod')
 const electronRunner = (() => {
   /** @type {child_process.ChildProcess | null} */
   let handle = null
-  return {
-    restart () {
-      console.info('Restarting Electron process.')
+  /** @type {Promise<void>} */
+  let queue = Promise.resolve()
 
-      if (handle) handle.kill()
-      const args = ['.']
-      if (process.platform === 'linux') {
-        args.unshift('--ozone-platform', 'x11')
+  async function restart () {
+    console.info('Restarting Electron process.')
+
+    if (handle) {
+      // wait for the old process to exit: until then it holds the
+      // single-instance lock, and the new one would quit immediately
+      const old = handle
+      handle = null
+      if (old.exitCode === null && old.signalCode === null) {
+        await new Promise(resolve => { old.once('exit', resolve); old.kill() })
       }
-      handle = child_process.spawn(String(electron), args, {
-        stdio: 'inherit'
-      })
     }
+    const args = ['.']
+    if (process.platform === 'linux' && process.env.APT_WINDOW_BACKEND !== 'kwin') {
+      args.unshift('--ozone-platform', 'x11')
+    }
+    handle = child_process.spawn(String(electron), args, {
+      stdio: 'inherit'
+    })
+  }
+
+  return {
+    // restarts run one after another, so rapid rebuilds can't overlap
+    restart () { queue = queue.then(restart) }
   }
 })()
 
@@ -34,9 +48,12 @@ const visionBuild = await esbuild.build({
 const mainContext = await esbuild.context({
   entryPoints: ['src/main.ts'],
   bundle: true,
+  loader: { '.kwin.js': 'text' },
   minify: !isDev,
   platform: 'node',
-  external: ['electron', 'uiohook-napi', 'electron-overlay-window'],
+  // optional requires inside dbus-next (bundled), both inside try/catch with a fallback:
+  // 'x11' finds the bus address via X11, 'usocket' is a native unix socket (falls back to `net`)
+  external: ['electron', 'uiohook-napi', 'electron-overlay-window', 'x11', 'usocket'],
   outfile: 'dist/main.js',
   define: {
     'process.env.STATIC': (isDev) ? '"../build/icons"' : '"."',

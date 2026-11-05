@@ -1,5 +1,6 @@
 import { Rectangle, Point, screen } from 'electron'
-import { uIOhook, UiohookMouseEvent } from 'uiohook-napi'
+import type { UiohookMouseEvent } from 'uiohook-napi'
+import { inputHook } from '../shortcuts/input-backend'
 import type { OverlayWindow } from './OverlayWindow'
 import type { ServerEvents } from '../server'
 
@@ -32,14 +33,14 @@ export class WidgetAreaTracker {
       }
 
       this.removeListeners()
-      uIOhook.addListener('mousemove', this.handleMouseMove)
-      uIOhook.addListener('mousedown', this.handleMouseDown)
+      inputHook.addListener('mousemove', this.handleMouseMove)
+      inputHook.addListener('mousedown', this.handleMouseDown)
     })
   }
 
   removeListeners () {
-    uIOhook.removeListener('mousemove', this.handleMouseMove)
-    uIOhook.removeListener('mousedown', this.handleMouseDown)
+    inputHook.removeListener('mousemove', this.handleMouseMove)
+    inputHook.removeListener('mousedown', this.handleMouseDown)
   }
 
   private readonly handleMouseMove = (e: UiohookMouseEvent) => {

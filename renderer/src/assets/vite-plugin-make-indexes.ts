@@ -7,7 +7,10 @@ export function makeIndexFilesPlugin (): Plugin {
 
   return {
     name: 'make-index-files',
-    buildStart () {
+    // Not `buildStart`: the dev server lists `public/` once at startup, before
+    // `buildStart`, and only serves files from that list. On a fresh checkout
+    // (indexes are gitignored) they'd be missing and get the SPA fallback HTML.
+    configResolved () {
       makeIndexFiles()
     },
     configureServer (server) {

@@ -1,7 +1,6 @@
 'use strict'
 
 import { app } from 'electron'
-import { uIOhook } from 'uiohook-napi'
 import os from 'node:os'
 import { startServer, eventPipe, server } from './server'
 import { Logger } from './RemoteLogger'
@@ -14,8 +13,11 @@ import { AppTray } from './AppTray'
 import { OverlayVisibility } from './windowing/OverlayVisibility'
 import { GameLogWatcher } from './host-files/GameLogWatcher'
 import { HttpProxy } from './proxy'
+import { inputHook } from './shortcuts/input-backend'
+import { kde, setKdeLogger } from './kde'
 
 if (!app.requestSingleInstanceLock()) {
+  console.error('Another instance of Awakened PoE Trade is already running, exiting.')
   app.exit()
 }
 
@@ -29,6 +31,10 @@ let tray: AppTray
 app.on('ready', async () => {
   tray = new AppTray(eventPipe)
   const logger = new Logger(eventPipe)
+  if (kde) {
+    setKdeLogger((msg) => logger.write(msg))
+    void kde.clipboard.init()
+  }
   const gameLogWatcher = new GameLogWatcher(eventPipe, logger)
   const gameConfig = new GameConfig(eventPipe, logger)
   const poeWindow = new GameWindow()
@@ -48,7 +54,7 @@ app.on('ready', async () => {
         appUpdater.checkAtStartup()
         tray.overlayKey = cfg.overlayKey
       })
-      uIOhook.start()
+      inputHook.start()
       const port = await startServer(appUpdater, logger)
       // TODO: move up (currently crashes)
       logger.write(`info ${os.type()} ${os.release} / v${app.getVersion()}`)

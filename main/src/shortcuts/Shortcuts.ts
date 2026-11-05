@@ -1,9 +1,12 @@
-import { screen, globalShortcut } from 'electron'
-import { uIOhook, UiohookKey, UiohookWheelEvent } from 'uiohook-napi'
+import { globalShortcut } from 'electron'
+import { UiohookKey, UiohookWheelEvent } from 'uiohook-napi'
+import { inputHook, getCursorPoint } from './input-backend'
+import { kde } from '../kde'
 import { isModKey, KeyToElectron, mergeTwoHotkeys } from '../../../ipc/KeyToCode'
 import { typeInChat, stashSearch } from './text-box'
 import { WidgetAreaTracker } from '../windowing/WidgetAreaTracker'
 import { HostClipboard } from './HostClipboard'
+import { electronClipboard } from './electron-clipboard'
 import { OcrWorker } from '../vision/link-main'
 import type { ShortcutAction } from '../../../ipc/types'
 import type { Logger } from '../RemoteLogger'
@@ -43,7 +46,7 @@ export class Shortcuts {
     private ocrWorker: OcrWorker
   ) {
     this.areaTracker = new WidgetAreaTracker(server, overlay)
-    this.clipboard = new HostClipboard(logger)
+    this.clipboard = new HostClipboard(logger, kde?.clipboard ?? electronClipboard(inputHook), inputHook)
 
     this.poeWindow.on('active-change', (isActive) => {
       process.nextTick(() => {
@@ -63,24 +66,24 @@ export class Shortcuts {
       }
     })
 
-    uIOhook.on('keydown', (e) => {
+    inputHook.on('keydown', (e) => {
       if (!this.logKeys) return
       const pressed = eventToString(e)
       this.logger.write(`debug [Shortcuts] Keydown ${pressed}`)
     })
-    uIOhook.on('keyup', (e) => {
+    inputHook.on('keyup', (e) => {
       if (!this.logKeys) return
       this.logger.write(`debug [Shortcuts] Keyup ${UiohookToName[e.keycode] || 'not_supported_key'}`)
     })
 
-    uIOhook.on('wheel', (e) => {
+    inputHook.on('wheel', (e) => {
       if (!e.ctrlKey || !this.poeWindow.isActive || !this.stashScroll) return
 
       if (!isStashArea(e, this.poeWindow)) {
         if (e.rotation > 0) {
-          uIOhook.keyTap(UiohookKey.ArrowRight)
+          inputHook.keyTap(UiohookKey.ArrowRight)
         } else if (e.rotation < 0) {
-          uIOhook.keyTap(UiohookKey.ArrowLeft)
+          inputHook.keyTap(UiohookKey.ArrowLeft)
         }
       }
     })
@@ -128,74 +131,19 @@ export class Shortcuts {
   }
 
   private register () {
+    if (kde) {
+      // KWin instead of globalShortcut, which goes through the XDG portal on
+      // Wayland: KDE confirms every new shortcut in a dialog (see shortcuts.kwin.js)
+      kde.shortcuts.set(this.actions
+        // test-only actions just check that a key can be registered
+        .filter(entry => entry.action.type !== 'test-only')
+        .map(entry => ({ shortcut: entry.shortcut, callback: () => this.handleShortcut(entry) })))
+      return
+    }
+
     for (const entry of this.actions) {
       const isOk = globalShortcut.register(shortcutToElectron(entry.shortcut), () => {
-        if (this.logKeys) {
-          this.logger.write(`debug [Shortcuts] Action type: ${entry.action.type}`)
-        }
-
-        if (entry.keepModKeys) {
-          const nonModKey = entry.shortcut.split(' + ').filter(key => !isModKey(key))[0]
-          uIOhook.keyToggle(UiohookKey[nonModKey as UiohookKeyT], 'up')
-        } else {
-          entry.shortcut.split(' + ').reverse().forEach(key => { uIOhook.keyToggle(UiohookKey[key as UiohookKeyT], 'up') })
-        }
-
-        if (entry.action.type === 'toggle-overlay') {
-          this.areaTracker.removeListeners()
-          this.overlay.toggleActiveState()
-        } else if (entry.action.type === 'paste-in-chat') {
-          typeInChat(entry.action.text, entry.action.send, this.clipboard)
-        } else if (entry.action.type === 'trigger-event') {
-          this.server.sendEventTo('broadcast', {
-            name: 'MAIN->CLIENT::widget-action',
-            payload: { target: entry.action.target }
-          })
-        } else if (entry.action.type === 'stash-search') {
-          stashSearch(entry.action.text, this.clipboard, this.overlay)
-        } else if (entry.action.type === 'copy-item') {
-          const { action } = entry
-
-          const pressPosition = screen.getCursorScreenPoint()
-
-          this.clipboard.readItemText()
-            .then(clipboard => {
-              this.areaTracker.removeListeners()
-              this.server.sendEventTo('last-active', {
-                name: 'MAIN->CLIENT::item-text',
-                payload: { target: action.target, clipboard, position: pressPosition, focusOverlay: Boolean(action.focusOverlay) }
-              })
-              if (action.focusOverlay && this.overlay.wasUsedRecently) {
-                this.overlay.assertOverlayActive()
-              }
-            }).catch(() => {})
-
-          pressKeysToCopyItemText(
-            (entry.keepModKeys) ? entry.shortcut.split(' + ').filter(key => isModKey(key)) : undefined,
-            this.gameConfig.showModsKey
-          )
-        } else if (entry.action.type === 'ocr-text' && entry.action.target === 'heist-gems') {
-          if (process.platform !== 'win32') return
-
-          const { action } = entry
-          const pressTime = Date.now()
-          const imageData = this.poeWindow.screenshot()
-          this.ocrWorker.findHeistGems({
-            width: this.poeWindow.bounds.width,
-            height: this.poeWindow.bounds.height,
-            data: imageData
-          }).then(result => {
-            this.server.sendEventTo('last-active', {
-              name: 'MAIN->CLIENT::ocr-text',
-              payload: {
-                target: action.target,
-                pressTime,
-                ocrTime: result.elapsed,
-                paragraphs: result.recognized.map(p => p.text)
-              }
-            })
-          }).catch(() => {})
-        }
+        this.handleShortcut(entry)
       })
 
       if (!isOk) {
@@ -208,8 +156,81 @@ export class Shortcuts {
     }
   }
 
+  private handleShortcut (entry: ShortcutAction) {
+    if (this.logKeys) {
+      this.logger.write(`debug [Shortcuts] Action type: ${entry.action.type}`)
+    }
+
+    if (entry.keepModKeys) {
+      const nonModKey = entry.shortcut.split(' + ').filter(key => !isModKey(key))[0]
+      inputHook.keyToggle(UiohookKey[nonModKey as UiohookKeyT], 'up')
+    } else {
+      entry.shortcut.split(' + ').reverse().forEach(key => { inputHook.keyToggle(UiohookKey[key as UiohookKeyT], 'up') })
+    }
+
+    if (entry.action.type === 'toggle-overlay') {
+      this.areaTracker.removeListeners()
+      this.overlay.toggleActiveState()
+    } else if (entry.action.type === 'paste-in-chat') {
+      typeInChat(entry.action.text, entry.action.send, this.clipboard)
+    } else if (entry.action.type === 'trigger-event') {
+      this.server.sendEventTo('broadcast', {
+        name: 'MAIN->CLIENT::widget-action',
+        payload: { target: entry.action.target }
+      })
+    } else if (entry.action.type === 'stash-search') {
+      stashSearch(entry.action.text, this.clipboard, this.overlay)
+    } else if (entry.action.type === 'copy-item') {
+      const { action } = entry
+
+      const pressPosition = getCursorPoint()
+
+      this.clipboard.readItemText()
+        .then(clipboard => {
+          this.areaTracker.removeListeners()
+          this.server.sendEventTo('last-active', {
+            name: 'MAIN->CLIENT::item-text',
+            payload: { target: action.target, clipboard, position: pressPosition, focusOverlay: Boolean(action.focusOverlay) }
+          })
+          if (action.focusOverlay && this.overlay.wasUsedRecently) {
+            this.overlay.assertOverlayActive()
+          }
+        }).catch(() => {})
+
+      pressKeysToCopyItemText(
+        (entry.keepModKeys) ? entry.shortcut.split(' + ').filter(key => isModKey(key)) : undefined,
+        this.gameConfig.showModsKey
+      )
+    } else if (entry.action.type === 'ocr-text' && entry.action.target === 'heist-gems') {
+      if (process.platform !== 'win32') return
+
+      const { action } = entry
+      const pressTime = Date.now()
+      const imageData = this.poeWindow.screenshot()
+      this.ocrWorker.findHeistGems({
+        width: this.poeWindow.bounds.width,
+        height: this.poeWindow.bounds.height,
+        data: imageData
+      }).then(result => {
+        this.server.sendEventTo('last-active', {
+          name: 'MAIN->CLIENT::ocr-text',
+          payload: {
+            target: action.target,
+            pressTime,
+            ocrTime: result.elapsed,
+            paragraphs: result.recognized.map(p => p.text)
+          }
+        })
+      }).catch(() => {})
+    }
+  }
+
   private unregister () {
-    globalShortcut.unregisterAll()
+    if (kde) {
+      kde.shortcuts.clear()
+    } else {
+      globalShortcut.unregisterAll()
+    }
   }
 }
 
@@ -230,15 +251,15 @@ function pressKeysToCopyItemText (pressedModKeys: string[] = [], showModsKey: st
   }
 
   for (const key of keys) {
-    uIOhook.keyToggle(UiohookKey[key as UiohookKeyT], 'down')
+    inputHook.keyToggle(UiohookKey[key as UiohookKeyT], 'down')
   }
 
   // finally press `C` to copy text
-  uIOhook.keyTap(UiohookKey.C)
+  inputHook.keyTap(UiohookKey.C)
 
   keys.reverse()
   for (const key of keys) {
-    uIOhook.keyToggle(UiohookKey[key as UiohookKeyT], 'up')
+    inputHook.keyToggle(UiohookKey[key as UiohookKeyT], 'up')
   }
 }
 

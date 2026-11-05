@@ -1,4 +1,3 @@
-import { clipboard, Clipboard } from 'electron'
 import type { Logger } from '../RemoteLogger'
 
 const POLL_DELAY = 48
@@ -10,6 +9,23 @@ const POLL_LIMIT = 500
 // wrong content (= restored clipboard, potentially containing password).
 const RESTORE_AFTER = 120
 
+/** Electron's clipboard (async since Electron 44, see electron-clipboard.ts) or Klipper on KDE Wayland. */
+export interface ClipboardLike {
+  readText (): Promise<string>
+  writeText (text: string): Promise<unknown>
+}
+
+/**
+ * Ordering of simulated key presses with async work. Clipboard operations are
+ * async, key presses are queued: a press waits for the barriers added before it.
+ */
+export interface InputSync {
+  /** key presses queued after this call wait for `p` */
+  barrier (p: Promise<unknown>): void
+  /** resolves once queued key presses were delivered */
+  idle (): Promise<void>
+}
+
 export class HostClipboard {
   private pollPromise?: Promise<string>
   private elapsed = 0
@@ -20,7 +36,9 @@ export class HostClipboard {
   get isPolling () { return this.pollPromise != null }
 
   constructor (
-    private logger: Logger
+    private logger: Logger,
+    private clipboard: ClipboardLike,
+    private input: InputSync
   ) {}
 
   updateOptions (restoreClipboard: boolean) {
@@ -33,30 +51,55 @@ export class HostClipboard {
       return await this.pollPromise
     }
 
-    let textBefore = clipboard.readText()
+    // The caller presses Ctrl+C right after this returns; the queued key
+    // presses wait until the clipboard was read and cleared.
+    const prepared = this.clipboard.readText()
+      .then(text => this.clearBeforeCopy(text))
+    this.input.barrier(prepared)
+
+    this.pollPromise = prepared
+      .then(textBefore => this.pollItemText(textBefore))
+      .finally(() => { this.pollPromise = undefined })
+    return this.pollPromise
+  }
+
+  /** Resolves with the text to restore later, after the clipboard was cleared. */
+  private async clearBeforeCopy (textBefore: string): Promise<string> {
+    const { clipboard } = this
+
     if (isPoeItem(textBefore)) {
       textBefore = ''
       if (process.platform !== 'linux') {
-        clipboard.writeText('')
+        await clipboard.writeText('')
       } else {
         // workaround KDE's "Prevent empty clipboard" feature
         // see https://github.com/SnosMe/awakened-poe-trade/issues/1790#issuecomment-4062830614
-        clipboard.writeText(`__APT_FORCE_EMPTY_${Date.now()}`)
+        await clipboard.writeText(`__APT_FORCE_EMPTY_${Date.now()}`)
       }
     } else if (process.platform === 'linux') {
       // workaround bug in Proton 10+ https://github.com/SnosMe/awakened-poe-trade/issues/1846
-      clipboard.writeText(`__APT_FORCE_EMPTY_${Date.now()}`)
+      await clipboard.writeText(`__APT_FORCE_EMPTY_${Date.now()}`)
     }
+    return textBefore
+  }
 
-    this.pollPromise = new Promise((resolve, reject) => {
-      const poll = () => {
-        const textAfter = clipboard.readText()
+  private pollItemText (textBefore: string): Promise<string> {
+    const { clipboard } = this
+
+    return new Promise((resolve, reject) => {
+      const poll = async () => {
+        let textAfter: string
+        try {
+          textAfter = await clipboard.readText()
+        } catch (e) {
+          reject(e)
+          return
+        }
 
         if (isPoeItem(textAfter)) {
           if (this.shouldRestore) {
-            clipboard.writeText(textBefore)
+            void clipboard.writeText(textBefore)
           }
-          this.pollPromise = undefined
           resolve(textAfter)
         } else {
           this.elapsed += POLL_DELAY
@@ -64,9 +107,8 @@ export class HostClipboard {
             setTimeout(poll, POLL_DELAY)
           } else {
             if (this.shouldRestore) {
-              clipboard.writeText(textBefore)
+              void clipboard.writeText(textBefore)
             }
-            this.pollPromise = undefined
 
             if (!isPoeItem(textAfter)) {
               this.logger.write('warn [ClipboardPoller] No item text found.')
@@ -77,13 +119,11 @@ export class HostClipboard {
       }
       setTimeout(poll, POLL_DELAY)
     })
-
-    return this.pollPromise
   }
 
   // when `shouldRestore` is false, this function continues
   // to work as a throttler for callback
-  restoreShortly (cb: (clipboard: Clipboard) => void) {
+  restoreShortly (cb: (clipboard: ClipboardLike) => void) {
     // Not only do we not overwrite the clipboard, but we don't exec callback.
     // This throttling helps against disconnects from "Too many actions".
     if (!this.isRestored) {
@@ -91,14 +131,21 @@ export class HostClipboard {
     }
 
     this.isRestored = false
-    const saved = clipboard.readText()
-    cb(clipboard)
-    setTimeout(() => {
-      if (this.shouldRestore) {
-        clipboard.writeText(saved)
-      }
+    this.clipboard.readText().then((saved) => {
+      cb(this.clipboard)
+      // restoring before simulated presses were delivered would make the game paste the restored text
+      void this.input.idle().then(() => {
+        setTimeout(() => {
+          if (this.shouldRestore) {
+            void this.clipboard.writeText(saved)
+          }
+          this.isRestored = true
+        }, RESTORE_AFTER)
+      })
+    }, (e) => {
+      this.logger.write(`error [HostClipboard] ${(e as Error).message}`)
       this.isRestored = true
-    }, RESTORE_AFTER)
+    })
   }
 }
 
