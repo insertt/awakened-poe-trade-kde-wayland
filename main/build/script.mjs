@@ -1,9 +1,23 @@
 // @ts-check
 import child_process from 'child_process'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import electron from 'electron'
 import esbuild from 'esbuild'
 
 const isDev = !process.argv.includes('--prod')
+
+/** Window backend from the dev app's host-settings.json (set via the tray), see HostSettings.ts */
+function devWindowBackend () {
+  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
+  try {
+    const file = path.join(configHome, 'awakened-poe-trade', 'apt-data', 'host-settings.json')
+    return JSON.parse(fs.readFileSync(file, 'utf8')).windowBackend
+  } catch {
+    return 'default'
+  }
+}
 
 const electronRunner = (() => {
   /** @type {child_process.ChildProcess | null} */
@@ -24,8 +38,8 @@ const electronRunner = (() => {
       }
     }
     const args = ['.']
-    if (process.platform === 'linux' && process.env.APT_WINDOW_BACKEND !== 'kwin') {
-      args.unshift('--ozone-platform', 'x11')
+    if (process.platform === 'linux' && devWindowBackend() !== 'kwin') {
+      args.unshift('--ozone-platform=x11')
     }
     handle = child_process.spawn(String(electron), args, {
       stdio: 'inherit'

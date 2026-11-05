@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import net from 'node:net'
-import path from 'node:path'
+import { encodeMessage, readString, waylandSocketPath } from './wayland-wire'
 
 /**
  * Modifier key state from KWin through the `org_kde_kwin_keystate` Wayland
@@ -46,45 +46,6 @@ const REGISTRY_EV_GLOBAL = 0
 const CALLBACK_EV_DONE = 0
 const KEYSTATE_FETCH_STATES = 0
 const KEYSTATE_EV_STATE_CHANGED = 0
-
-/** Path of the compositor socket, per the Wayland client library's rules. */
-function waylandSocketPath (env = process.env): string | undefined {
-  const display = env.WAYLAND_DISPLAY || 'wayland-0'
-  if (path.isAbsolute(display)) return display
-  if (!env.XDG_RUNTIME_DIR) return undefined
-  return path.join(env.XDG_RUNTIME_DIR, display)
-}
-
-// ---- wire format: [object id: u32][size << 16 | opcode: u32][args...], host byte order (LE)
-
-function encodeMessage (objectId: number, opcode: number, args: Array<number | string>): Buffer {
-  const parts: Buffer[] = []
-  for (const arg of args) {
-    if (typeof arg === 'number') {
-      const b = Buffer.alloc(4)
-      b.writeUInt32LE(arg >>> 0)
-      parts.push(b)
-    } else {
-      const str = Buffer.from(arg + '\0', 'utf8')
-      const len = Buffer.alloc(4)
-      len.writeUInt32LE(str.length)
-      const padded = Buffer.alloc(Math.ceil(str.length / 4) * 4)
-      str.copy(padded)
-      parts.push(len, padded)
-    }
-  }
-  const body = Buffer.concat(parts)
-  const header = Buffer.alloc(8)
-  header.writeUInt32LE(objectId)
-  header.writeUInt32LE(((8 + body.length) << 16) | opcode, 4)
-  return Buffer.concat([header, body])
-}
-
-function readString (body: Buffer, offset: number): [string, number] {
-  const len = body.readUInt32LE(offset)
-  const str = body.toString('utf8', offset + 4, offset + 4 + Math.max(0, len - 1))
-  return [str, offset + 4 + Math.ceil(len / 4) * 4]
-}
 
 export class WaylandKeyState extends EventEmitter {
   mods: ModState = { ctrl: false, shift: false, alt: false, meta: false }

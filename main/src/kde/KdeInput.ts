@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { KWinController } from './KWinController'
-import type { RemoteDesktop } from './RemoteDesktop'
+import type { KeyInjector } from './KeyInjector'
 import { startEvdev, EV_KEY, EV_REL, REL_WHEEL } from './evdev'
 import { uiohookToEvdev, evdevToUiohook, EVDEV_MODIFIERS } from './keymap'
 
@@ -34,7 +34,7 @@ type Mod = 'ctrl' | 'shift' | 'alt' | 'meta'
  *        works with native Wayland and XWayland games. Plasma 6.3+.
  *      - other keys, mouse buttons, wheel from uiohook on XWayland: only for
  *        games running under XWayland, and only while they're focused.
- * - key injection: RemoteDesktop portal
+ * - key injection: KWin fake input, or the RemoteDesktop portal (KeyInjector)
  *
  * Mouse coordinates are game-local (see KWinController).
  */
@@ -68,7 +68,7 @@ export class KdeInput extends EventEmitter {
 
   constructor (
     private controller: KWinController,
-    private rd: RemoteDesktop,
+    private rd: KeyInjector,
     private log: (msg: string) => void,
     /** starts uiohook against XWayland; throws if that isn't possible */
     private startX11Hook?: () => X11Hook,
@@ -218,7 +218,7 @@ export class KdeInput extends EventEmitter {
         if (!this.rd.isActive) {
           if (!this.warnedInactive) {
             this.warnedInactive = true
-            this.log('warn [KdeInput] No RemoteDesktop session, key presses are dropped.')
+            this.log('warn [KdeInput] No way to send keys (KWin fake input / RemoteDesktop portal), key presses are dropped.')
           }
           void this.rd.start()
           return

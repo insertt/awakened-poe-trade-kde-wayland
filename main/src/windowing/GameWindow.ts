@@ -2,8 +2,6 @@ import type { BrowserWindow } from 'electron'
 import { EventEmitter } from 'events'
 import type { AttachEvent } from 'electron-overlay-window'
 import { overlayBackend } from './overlay-controller'
-import { useKWin } from '../kde'
-import { KWinController } from '../kde/KWinController'
 
 export interface GameWindow {
   on: (event: 'active-change', listener: (isActive: boolean) => void) => this
@@ -35,9 +33,6 @@ export class GameWindow extends EventEmitter {
 
   attach (window: BrowserWindow | undefined, title: string) {
     if (!this._isTracking) {
-      if (useKWin && !KWinController.isAvailable()) {
-        throw new Error('APT_WINDOW_BACKEND=kwin requires a KDE Plasma Wayland session')
-      }
       overlayBackend.events.on('focus', () => { this.isActive = true })
       overlayBackend.events.on('blur', () => { this.isActive = false })
       void Promise.resolve(overlayBackend.attachByTitle(window, title)).catch((e) => {

@@ -5,13 +5,18 @@ import { KWinScripts } from './bus'
 import { KWinController } from './KWinController'
 import { RemoteDesktop } from './RemoteDesktop'
 import { KdeInput } from './KdeInput'
+import { KeyInjector } from './KeyInjector'
 import { KdeShortcuts } from './KdeShortcuts'
 import { KdeClipboard } from './KdeClipboard'
 import { WaylandKeyState } from './keystate'
 import { OverlayRule } from './OverlayRule'
+import { readHostSettings } from '../host-files/HostSettings'
 
-/** Prototype: opt-in with APT_WINDOW_BACKEND=kwin (KDE Plasma 6, Wayland session). */
-export const useKWin = process.env.APT_WINDOW_BACKEND === 'kwin'
+/** Window backend picked in host-settings.json (tray: "Window backend"). Read once at startup. */
+export const selectedWindowBackend = readHostSettings().windowBackend
+/** The KWin backend only works in a KDE Plasma Wayland session. */
+export const kwinAvailable = KWinController.isAvailable()
+export const useKWin = selectedWindowBackend === 'kwin' && kwinAvailable
 
 let logFn: (msg: string) => void = console.log
 /** Messages use the RemoteLogger format: "<level> [Module] text". */
@@ -30,8 +35,9 @@ function create () {
     `desktop=${process.env.XDG_CURRENT_DESKTOP}, bus=${process.env.DBUS_SESSION_BUS_ADDRESS})`)
   const scripts = new KWinScripts()
   const controller = new KWinController(scripts, log)
-  const rd = new RemoteDesktop(path.join(app.getPath('userData'), 'kde-remote-desktop.token'), log)
-  const input = new KdeInput(controller, rd, log, () => {
+  // the portal is only used if KWin's fake input isn't available
+  const portal = new RemoteDesktop(path.join(app.getPath('userData'), 'kde-remote-desktop.token'), log)
+  const input = new KdeInput(controller, new KeyInjector(portal, log), log, () => {
     // listening only; key injection on Wayland goes through the RemoteDesktop portal
     uIOhook.start()
     return uIOhook
@@ -55,6 +61,11 @@ function create () {
   })
 
   return { scripts, controller, input, shortcuts, clipboard }
+}
+
+if (selectedWindowBackend === 'kwin' && !kwinAvailable) {
+  log('warn [KDE] Window backend "KWin" needs a KDE Plasma Wayland session ' +
+    `(session=${process.env.XDG_SESSION_TYPE}, desktop=${process.env.XDG_CURRENT_DESKTOP}); using the default backend.`)
 }
 
 export const kde = useKWin ? create() : undefined
