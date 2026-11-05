@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v3.29.108). Leave empty to only build and upload a workflow artifact.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark the GitHub release as a pre-release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-node@v6
+
+    - run: npm ci
+      working-directory: ./renderer
+    - run: npm run build
+      working-directory: ./renderer
+
+    - run: npm ci
+      working-directory: ./main
+    - run: npm run build
+      working-directory: ./main
+    - run: npm run package "--" --linux AppImage -p never '-c.linux.artifactName=${name}-${version}-KDE-Wayland.${ext}'
+      working-directory: ./main
+
+    - run: cat ./main/dist/latest-linux.yml
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: appimage
+        path: |
+          ./main/dist/*.AppImage
+          ./main/dist/latest-linux.yml
+
+    - name: Create GitHub release
+      if: ${{ inputs.tag != '' }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        args=()
+        if [ "${{ inputs.prerelease }}" = "true" ]; then args+=(--prerelease); fi
+        gh release create "${{ inputs.tag }}" \
+          --target "${{ github.sha }}" \
+          --title "${{ inputs.tag }}" \
+          --generate-notes \
+          "${args[@]}" \
+          ./main/dist/*.AppImage \
+          ./main/dist/latest-linux.yml
