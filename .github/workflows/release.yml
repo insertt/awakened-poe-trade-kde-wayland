@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v3.29.108). Leave empty to only build and upload a workflow artifact.'
+        description: 'Release tag (e.g. v3.29.108). Leave empty to use <branch>-<commit hash>.'
         required: false
         type: string
       prerelease:
@@ -36,23 +36,36 @@ jobs:
 
     - run: cat ./main/dist/latest-linux.yml
 
-    - uses: actions/upload-artifact@v7
+    - name: Upload AppImage
+      uses: actions/upload-artifact@v7
       with:
-        name: appimage
-        path: |
-          ./main/dist/*.AppImage
-          ./main/dist/latest-linux.yml
+        path: ./main/dist/*.AppImage
+        archive: false
+
+    - name: Upload update metadata
+      uses: actions/upload-artifact@v7
+      with:
+        path: ./main/dist/latest-linux.yml
+        archive: false
 
     - name: Create GitHub release
-      if: ${{ inputs.tag != '' }}
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        INPUT_TAG: ${{ inputs.tag }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        REF_NAME: ${{ github.ref_name }}
       run: |
+        if [ -n "$INPUT_TAG" ]; then
+          name="$INPUT_TAG"
+        else
+          # No tag given: name the release after the branch and commit hash
+          name="$(echo "$REF_NAME" | tr '/' '-')-$(git rev-parse --short HEAD)"
+        fi
         args=()
-        if [ "${{ inputs.prerelease }}" = "true" ]; then args+=(--prerelease); fi
-        gh release create "${{ inputs.tag }}" \
-          --target "${{ github.sha }}" \
-          --title "${{ inputs.tag }}" \
+        if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+        gh release create "$name" \
+          --target "$GITHUB_SHA" \
+          --title "$name" \
           --generate-notes \
           "${args[@]}" \
           ./main/dist/*.AppImage \
